@@ -1,0 +1,102 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+    <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport"/>
+    <meta content="yes" name="apple-mobile-web-app-capable"/>
+    <meta content="black" name="apple-mobile-web-app-status-bar-style"/>
+    <meta http-equiv="Cache-Control" content="no-transform"/>
+    <meta http-equiv="Cache-Control" content="no-siteapp"/>
+    <meta content="telephone=no" name="format-detection"/>
+    <link rel="shortcut icon" href="/static/images/pic.png" type="image/png"/>
+    <meta name="renderer" content="webkit">
+    <meta name="description" content="">
+    <meta name="keywords" content="ArchLinux, ClarkQAQ, 个人博客, Blog, Code">
+    <title>golang实现p2p之UDP打洞 - Clark&#39;s Blog</title>
+    <link rel="stylesheet" href="https://clarkqaq.gitee.io/static/css/style.css">
+    <link rel="stylesheet" href="https://clarkqaq.gitee.io/static/css/strapdown.css">
+</head>
+<body>
+<div class="wrapper">
+    <header>
+        <a href="/" class="logo"><img src="https://clarkqaq.gitee.io/static/images/user-head-image.png" alt="Clark&#39;s Blog"/></a>
+        <div class="description">
+            <h1>Clark&#39;s Blog</h1>
+            <h2>在一个阳光明媚的午后,突然消失,永远消失.</h2>
+            <nav>
+                <div class="bitcron_nav_container">
+                    <div class="bitcron_nav">
+                        <div class="mixed_site_nav_wrap site_nav_wrap">
+                            <ul class="mixed_site_nav site_nav sm sm-base">
+                                <li><a href="/" class="selected active current nav__item">首页</a>
+                                </li>
+
+                            </ul>
+                            <div class="clear clear_nav_inline_end">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="clear clear_nav_end">
+                    </div>
+                </div>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+<article class="content">
+
+    <h1>golang实现p2p之UDP打洞</h1>
+    <div class="meta">
+            <span class="item">日期:<time>2020-07-01</time></span>
+        <span class="item">标签:默认(未实现)</span>
+    </div>
+    <div class="post">
+        <div class="md_block" id="markdown">
+
+        </div>
+    </div>
+    <br />
+    <br />
+</article>
+    <script src="https://clarkqaq.gitee.io/static/js/strapdown.js"></script>
+    <script>
+		document.getElementById("markdown").innerHTML = "\n\n\n### 当今互联网到处存在着一些中间件(MIddleBoxes)，如NAT和防火墙，导致两个(不在同一内网)中的客户端无法直接通信。 这些问题即便是到了IPV6时代也会存在，因为即使不需要NAT，但还有其他中间件如防火墙阻挡了链接的建立。 目前部署的中间件多都是在C\/S架构上设计的，其中相对隐匿的客户机主动向周知的服务端(拥有静态IP地址和DNS名称)发起链接请求。 大多数中间件实现了一种非对称的通讯模型，即内网中的主机可以初始化对外的链接，而外网的主机却不能初始化对内网的链接， 除非经过中间件管理员特殊配置。\n\n##### 在中间件为常见的NAPT的情况下（也是本文主要讨论的），内网中的客户端没有单独的公网IP地址， 而是通过NAPT转换，和其他同一内网用户共享一个公网IP。这种内网主机隐藏在中间件后的不可访问性对于一些客户端软件如浏览器来说 并不是一个问题，因为其只需要初始化对外的链接，从某方面来看反而还对隐私保护有好处。然而在P2P应用中， 内网主机（客户端）需要对另外的终端（Peer）直接建立链接，但是发起者和响应者可能在不同的中间件后面， 两者都没有公网IP地址。而外部对NAT公网IP和端口主动的链接或数据都会因内网未请求被丢弃掉。本文讨论的就是如何跨越NAT实现内网主机直接通讯的问题。\n\n```\n   1.网络模型\n   2.打洞流程\n   3.先决条件\n   4.源码示例\n   5.udp打洞转tcp通信\n   6.参考文献\n```\n\n### 网络模型\n\n假设客户端A和客户端B的地址都是内网地址，且在不同的NAT后面。A、B上运行的P2P应用程序和服务器S都使用了UDP端口9982，A和B分别初始化了 与Server的UDP通信，地址映射如图所示:\n```\n                            Server S\n                        207.148.70.129:9981\n                               |\n                               |\n        \x2b----------------------|----------------------\x2b\n        |                                             |\n      NAT A                                         NAT B\n    120.27.209.161:6000                            120.26.10.118:3000\n        |                                             |\n        |                                             |\n     Client A                                      Client B\n      10.0.0.1:9982                                 192.168.0.1:9982\n```\n现在假设客户端A打算与客户端B直接建立一个UDP通信会话。如果A直接给B的公网地址120.26.10.118:3000发送UDP数据，NAT B将很可能会无视进入的 数据（除非是Full Cone NAT），因为源地址和端口与S不匹配，而最初只与S建立过会话。B往A直接发信息也类似。\n\n假设A开始给B的公网地址发送UDP数据的同时，给服务器S发送一个中继请求，要求B开始给A的公网地址发送UDP信息。A往B的输出信息会导致NAT A打开 一个A的内网地址与与B的外网地址之间的新通讯会话，B往A亦然。一旦新的UDP会话在两个方向都打开之后，客户端A和客户端B就能直接通讯， 而无须再通过引导服务器S了。\n\nUDP打洞技术有许多有用的性质。一旦一个的P2P链接建立，链接的双方都能反过来作为“引导服务器”来帮助其他中间件后的客户端进行打洞， 极大减少了服务器的负载。应用程序不需要知道中间件具体是什么（如果有的话），因为以上的过程在没有中间件或者有多个中间件的情况下 也一样能建立通信链路。\n### 打洞流程\n\n假设A现在希望建立一条到B的udp会话，那么这个建立基本流程是:\n```\n    A,B分别建立到Server S的udp会话,那么Server S此时是知道A,B各自的外网ip\x2b端口\n    Server S在和B的udp会话里告诉A的地址(外网ip\x2b端口: 120.27.209.161:6000),同理把B的地址(120.26.10.118:3000)告诉A\n    B向A地址(120.27.209.161:6000)发送一个\x22握手\x22udp包,打通A-\x3eB的udp链路\n    此时A可以向B(120.26.10.118:3000)发送udp包,A-\x3eB的会话建立成功\n```\n \n### 先决条件\n\n能够完成打洞有几个先决条件:\n```\n    A,B所在的nat网络类型(Full cone, Restricted cone, Port-restricted cone, Symmetric NAT)\n    在一次udp会话期间,nat设备(路由器)会保持内网进程 inner_ip:inner_port \x3c-\x3e share_public_ip:share_port的映射关系,一般根据具体路由器实现,这个映射关系可以维持几分钟到几个小时不等\n    流程中第3步,nat A收到这个握手包后并不会转发给A,因为它发现自己的没有保存过B的地址,认为这是一个来历不明的包而直接丢弃,然而这个包的作用在于在nat B留下了A的记录,使得nat B认为A是可达或者说可通过了,这样当A-\x3eB再发送udp包时就可以真正到达B了。所以这个\x22握手\x22包的作用是可以打通A-\x3eB的通路,是必要的\n```\n \n### 源码示例\n\n##### 使用三台设备模拟,外网设备207.148.70.129模拟Server S,执行server.go代码:\n```golang\n    server.go\n\n    package main\n    ​\n    import (\n        \x22fmt\x22\n        \x22log\x22\n        \x22net\x22\n        \x22time\x22\n    )\n    ​\n    func main() {\n        listener, err := net.ListenUDP(\x22udp\x22, \x26net.UDPAddr{IP: net.IPv4zero, Port: 9981})\n        if err != nil {\n            fmt.Println(err)\n            return\n        }\n        log.Printf(\x22本地地址: \x3c%s\x3e \\n\x22, listener.LocalAddr().String())\n        peers := make([]net.UDPAddr, 0, 2)\n        data := make([]byte, 1024)\n        for {\n            n, remoteAddr, err := listener.ReadFromUDP(data)\n            if err != nil {\n                fmt.Printf(\x22error during read: %s\x22, err)\n            }\n            log.Printf(\x22\x3c%s\x3e %s\\n\x22, remoteAddr.String(), data[:n])\n            peers = append(peers, *remoteAddr)\n            if len(peers) == 2 {\n    ​\n                log.Printf(\x22进行UDP打洞,建立 %s \x3c--\x3e %s 的连接\\n\x22, peers[0].String(), peers[1].String())\n                listener.WriteToUDP([]byte(peers[1].String()), \x26peers[0])\n                listener.WriteToUDP([]byte(peers[0].String()), \x26peers[1])\n                time.Sleep(time.Second * 8)\n                log.Println(\x22中转服务器退出,仍不影响peers间通信\x22)\n                return\n            }\n        }\n    }\n```\n\n  另外两台分别位于不同内网后的设备,均运行相同代码peer.go:\n\n```golang\n    package main\n    ​\n    import (\n        \x22fmt\x22\n        \x22log\x22\n        \x22net\x22\n        \x22os\x22\n        \x22strconv\x22\n        \x22strings\x22\n        \x22time\x22\n    )\n    ​\n    var tag string\n    ​\n    const HAND_SHAKE_MSG = \x22我是打洞消息\x22\n    ​\n    func main() {\n        \/\/ 当前进程标记字符串,便于显示\n        tag = os.Args[1]\n        srcAddr := \x26net.UDPAddr{IP: net.IPv4zero, Port: 9982} \/\/ 注意端口必须固定\n        dstAddr := \x26net.UDPAddr{IP: net.ParseIP(\x22207.148.70.129\x22), Port: 9981}\n        conn, err := net.DialUDP(\x22udp\x22, srcAddr, dstAddr)\n        if err != nil {\n            fmt.Println(err)\n        }\n        if _, err = conn.Write([]byte(\x22hello, I\x27m new peer:\x22 \x2b tag)); err != nil {\n            log.Panic(err)\n        }\n        data := make([]byte, 1024)\n        n, remoteAddr, err := conn.ReadFromUDP(data)\n        if err != nil {\n            fmt.Printf(\x22error during read: %s\x22, err)\n        }\n        conn.Close()\n        anotherPeer := parseAddr(string(data[:n]))\n        fmt.Printf(\x22local:%s server:%s another:%s\\n\x22, srcAddr, remoteAddr, anotherPeer.String())\n    ​\n        \/\/ 开始打洞\n        bidirectionHole(srcAddr, \x26anotherPeer)\n    ​\n    }\n    ​\n    func parseAddr(addr string) net.UDPAddr {\n        t := strings.Split(addr, \x22:\x22)\n        port, _ := strconv.Atoi(t[1])\n        return net.UDPAddr{\n            IP:   net.ParseIP(t[0]),\n            Port: port,\n        }\n    }\n    ​\n    func bidirectionHole(srcAddr *net.UDPAddr, anotherAddr *net.UDPAddr) {\n        conn, err := net.DialUDP(\x22udp\x22, srcAddr, anotherAddr)\n        if err != nil {\n            fmt.Println(err)\n        }\n        defer conn.Close()\n        \/\/ 向另一个peer发送一条udp消息(对方peer的nat设备会丢弃该消息,非法来源),用意是在自身的nat设备打开一条可进入的通道,这样对方peer就可以发过来udp消息\n        if _, err = conn.Write([]byte(HAND_SHAKE_MSG)); err != nil {\n            log.Println(\x22send handshake:\x22, err)\n        }\n        go func() {\n            for {\n                time.Sleep(10 * time.Second)\n                if _, err = conn.Write([]byte(\x22from [\x22 \x2b tag \x2b \x22]\x22)); err != nil {\n                    log.Println(\x22send msg fail\x22, err)\n                }\n            }\n        }()\n        for {\n            data := make([]byte, 1024)\n            n, _, err := conn.ReadFromUDP(data)\n            if err != nil {\n                log.Printf(\x22error during read: %s\\n\x22, err)\n            } else {\n                log.Printf(\x22收到数据:%s\\n\x22, data[:n])\n            }\n        }\n    }\n```\n注意代码仅模拟打洞基础流程,如果读者测试网络情况较差发生udp丢包,可能看不到预期结果,此时简单重启server,peer即可.\n\n完整代码参考github\n### udp打洞转tcp通信\n\n通常,由于udp打洞实现简单,p2p的实现采用udp打洞较多,然而当通路建立起来后使用tcp进行节点间通信可以获取更好的通信效果。因为udp打洞完成后形成的nat映射是和tcp\/udp无关的,所以此时可以转为使用tcp建立连接,达到最终的p2p的tcp通信.由于代码较简单,这里就不给出示例了。\n### 参考文献\n\n  [UDP用打洞技术穿透NAT的原理与实现](https:\/\/yq.aliyun.com\/articles\/227421 \x22UDP用打洞技术穿透NAT的原理与实现\x22)\n  [P2P通信原理与实现](https:\/\/zhuanlan.zhihu.com\/p\/26796476 \x22P2P通信原理与实现\x22)\n  [NAT类型检测工具](https:\/\/github.com\/jtriley\/pystun \x22NAT类型检测工具\x22)\n";
+		markdown("markdown");
+	</script>
+</main>
+</div>
+    <footer>
+        <span>ClarkQAQ - ♥</span>
+        <div>友情链接:
+        <a href="http://blog.claraqwq.com/" target="_blank" title="ClaraQWQ的博客">Clara</a>
+		</div>
+        <div class="powered_by">
+            <span>© CopyRight</span>
+            <a href="http://clarkabe.top" target="_blank">ClarkQAQ</a>
+            <a href="#" target="_blank">Fantasy</a>
+        </div>
+        <div class="footer_slogan">
+        </div>
+    </footer>
+
+    <script>
+		(function() {
+			var OriginTitle = document.title;
+			var titleTime;
+			document.addEventListener('visibilitychange', function () {
+				if (document.hidden) {
+					document.title = "喔唷,崩溃啦!";
+					clearTimeout(titleTime);
+				}else {
+					document.title = "诶!=w=又好了!";
+					titleTime = setTimeout(function () {
+						document.title = OriginTitle;
+					}, 2000);
+				}
+			});
+		 }());
+    </script>
+</body>
+</html>
